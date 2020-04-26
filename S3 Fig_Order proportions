@@ -1,0 +1,120 @@
+#Chloe Robinson, Apr 24 2020
+
+library(reshape2) # dcast
+library(ggplot2) # ggplot
+
+###################################################################
+# Plot phyla vs ESVs/reads
+# Calculate number of Arthropoda ESVs/reads for each amplicon
+###################################################################
+
+#Read in table
+a <- read.table("rdp.csv", header = TRUE, sep = ",",stringsAsFactors = FALSE)
+head(a)
+
+# Remove unwanted phyla
+
+a.1<- a[a$Phylum!="Cryptophyta",]
+dim(a.1)
+a.2<- a.1[a.1$Phylum!="Rhodophyta",]
+dim(a.2)
+a.3<- a.2[a.2$Phylum!="undef_undef_Eukaryota",]
+dim(a.3)
+
+# Summarize ESVs in all unique phyla (pooled across samples)
+a.esv <- dcast(a.3, Order ~ . , value.var="rbcL_GlobalESV", function (x) {length(unique(x))})
+names(a.esv)<-c("Order","GlobalESV")
+
+# Sort by descending ESVs
+a.esv.desc<-a.esv[order(-a.esv$GlobalESV),]
+
+# Summarize reads in all detected phyla
+a.read <- dcast(a, Order ~ . , value.var="ESVsize", fun.aggregate=sum)
+names(a.read)<-c("Order","ESVsize")
+
+# Sort by descending reads
+a.read.desc<-a.read[order(-a.read$ESVsize),]
+
+# calc proportions
+a.esv.order<-a.esv.desc[,1]
+a.esvprop<-round(a.esv.desc[,2]/sum(a.esv.desc[,2])*100,digits=2)
+a.read.order<-a.read.desc[,1]
+a.readprop<-round(a.read.desc[,2]/sum(a.read.desc[,2])*100,digits=2)
+
+# Create esv prop table
+a.esv.table<-data.frame(order=a.esv.order, esv=a.esvprop)
+
+# Create read prop table
+a.read.table<-data.frame(order=a.read.order, read=a.readprop)
+
+# Keep top 10
+a.esv.top<-a.esv.table[1:10,]
+a.read.top<-a.read.table[1:10,]
+
+# Create 'other' df
+a.esv.other<-a.esv.table[-(1:10),]
+a.read.other<-a.read.table[-(1:10),]
+
+# Sum 'other' line
+a.esv.other.sum <- sum(a.esv.other$esv)
+a.read.other.sum <- sum(a.read.other$read)
+
+# Create df record for other
+a.esv.other.sum.df <- data.frame("order"="Other", "esv"=a.esv.other.sum)
+a.read.other.sum.df <- data.frame("order"="Other", "read"=a.read.other.sum)
+
+# Add other to top df
+a.esv.rbind <- rbind(a.esv.top, a.esv.other.sum.df)
+a.read.rbind <- rbind(a.read.top, a.read.other.sum.df)
+
+# outer join esvs and reads
+a.table<-merge(a.esv.rbind, a.read.rbind, by="order", all=TRUE)
+
+# Create long form form ggplot
+a.long<-melt(a.table, id=c("order"))
+
+# create factors
+a.long$variable <- factor(a.long$variable,
+                          levels=c("esv","read"),
+                          labels=c("ESVs","Reads"))
+
+# proprtions for top 10
+p<-ggplot(data=a.long, aes(x=variable, y=value, fill=order, label=value)) +
+  geom_bar(stat="identity") +
+  geom_text(size = 5, position = position_stack(vjust = 0.5)) +
+  labs(y="Proportions", x="Top 10 orders") +
+  theme_bw() +
+  theme(panel.border = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        axis.line = element_line(colour = "black"),
+        text=element_text(size=14),
+        axis.title.x=element_blank(),
+        plot.title=element_text(size=10),
+        legend.position="bottom",
+        legend.text=element_text(size=12),
+        legend.title=element_blank(),
+        legend.key.size = unit(0.45, "cm")) +
+  guides(fill = guide_legend(nrow = 3))
+p
+
+ggsave("order.pdf", p, width=8)
+
+##############################################
+# Supplementary Table Info
+##############################################
+
+# Get Eukaryota & rbcL
+rbcL.Euk <- a.3[a.3$SuperKingdom=="Eukaryota" &
+                grepl("rbcL", a.3$rbcL_GlobalESV),]
+
+# Sum Eukaryota & rbcL ESV counts
+length(unique(rbcL.Euk$rbcL_GlobalESV))
+# 3,940
+
+# Sum Eukaryota & rbcL read counts
+sum(rbcL.Euk$ESVsize)
+# 2,125,984
+
+#END OF SCRIPT
+###########################################################################
