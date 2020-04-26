@@ -1,0 +1,241 @@
+#Chloe Robinson, Feb 28 2020
+
+library(stringr) # str_split
+library(reshape2) # dcast
+library(vegan) # rrarefy
+library(ggplot2) # ggplot
+library(data.table) # setDT
+library(goeveg) # scree
+library(plyr) # ddply
+library(gridExtra)
+
+#Read in table
+a <- read.table("rdp.csv", header = TRUE, sep = ",",stringsAsFactors = FALSE)
+head(a)
+
+# Create dataframes for vegan
+# Split up SampleName with pkg 'stringr'
+a.1<-data.frame(a, do.call(rbind, str_split(a$SampleName,"_")), stringsAsFactors = FALSE)
+head(a.1)
+names(a.1)[31:36]<- c("Name","Diatom","Site","Method","Replicate","Status")
+head(a.1)
+
+# Remove unwanted phyla
+
+a.1<- a[a$Phylum!="Cryptophyta",]
+dim(a.1)
+a.2<- a.1[a.1$Phylum!="Rhodophyta",]
+dim(a.2)
+a.3<- a.2[a.2$Phylum!="undef_undef_Eukaryota",]
+dim(a.3)
+
+# pivot to make esv matrix (pool across verions, keep only substrate + sites separate)
+a.2.esv<-reshape2::dcast(a.3, SampleName ~ rbcL_GlobalESV, value.var = "ESVsize", fun.aggregate = sum)
+
+# move sample to rownames then delete
+rownames(a.2.esv) <- a.2.esv$SampleName
+a.2.esv$SampleName <- NULL
+
+#remove columns with only zeros
+esv.notnull<-a.2.esv[,colSums(a.2.esv) !=0]
+
+#remove rows with only zeros & edit rownames
+esv.notnull2<-esv.notnull[rowSums(esv.notnull) !=0,]
+
+# Exclude negative controls before doing rarefaction (if present)
+#esv.notnull2.2 <- esv.notnull2[-c(3,6,9),]
+
+#calculate 15th percentile for rrarefy function
+esv.percentile<-quantile(rowSums(esv.notnull2), prob=0.15)
+esv.percentile
+# 15% 
+# 37735.6
+
+# set random seed
+set.seed(1234)
+
+# Rarefy the dataset down to the 15th percentile
+rare.mat <- rrarefy(esv.notnull2, sample=esv.percentile)
+
+# Convert to presence-absence matrix
+rare.mat[rare.mat>0] <-1
+
+# Scree plots to determine number of dimensions to use for NMDS, use k=2
+pdf("Scree.pdf")
+# check dims
+dimcheckMDS(rare.mat)
+dev.off()
+
+# Do 2 dimensional NMDS
+nmds2<-metaMDS(rare.mat, k=2, trymax=100)
+# stress = 0.11112714
+
+# Stressplot Shephards curve to assess goodness of fit between observed and ordination distances
+pdf("stressplot.pdf")
+stressplot(nmds2)
+gof <-goodness(nmds2)
+gof
+plot(nmds2, display = "sites", type="n", main="SSU")
+points(nmds2, display="sites",cex=2*gof/mean(gof))
+dev.off()
+# linear R2 = 0.988
+
+# Create grouping matrix for samples by grabbing row names from above matrix
+names<-data.frame(row.names(rare.mat), stringsAsFactors = FALSE)
+
+# Rename the column
+names(names)<-"sample"
+
+# Copy column to row names
+row.names(names)<-names$sample
+
+# Split first column into their own fields
+names.1<-data.frame(names, do.call(rbind, strsplit(names$sample,'_')), stringsAsFactors = FALSE)
+names(names.1)[2:7]<-c("Name","Diatom","Site","Method","Replicate","Status")
+
+# Exclude negative controls before doing NMDS
+#names.2 <- names.1[-c(3,7,11),]
+
+# Remove first column
+names.1 <- names.1[,-1]
+
+# Grab sites/species scores from NMDS output
+df <- data.frame(scores(nmds2, display = "sites"))
+
+# Put it all in one df for ggplot
+gg <- merge(df, names.1, by="row.names")
+
+gg$Site <- factor(gg$Site, 
+                       levels = c("B18", "C12", "C15","L07"),
+                       labels = c("Beaver18", "Clair12", "Clair15","Laurel7"))
+gg$Method <- factor(gg$Method, 
+                         levels = c("K", "M", "L", "R","S"),
+                         labels = c("Kick-net", "Macrophyte", "Leaf Litter", "Rock","Sediment"))
+gg$Replicate <- factor(gg$Replicate, 
+                            levels = c("1", "2", "3"),
+                            labels = c("Replicate 1", "Replicate 2", "Replicate 3"))
+gg$Status <- factor(gg$Status, 
+                         levels = c("F", "G"),
+                         labels = c("Fair", "Good"))
+
+# color by method
+chulls.method <- ddply(gg, .(Method), function(gg) gg[chull(gg$NMDS1, gg$NMDS2), ])
+
+# NMDS plot, color by method
+p1 <- ggplot(data=gg, aes(x=NMDS1, y=NMDS2)) + 
+  geom_polygon(data=chulls.method, aes(x=NMDS1, y=NMDS2, fill=Method), alpha=0.5) +
+  geom_point(data=gg, aes(color=Method)) +
+  ggtitle("a)") +
+  theme_bw() +
+  theme(
+    plot.title = element_text(size=10),
+    axis.text.x = element_text(hjust=1),
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank(), 
+    axis.line = element_line(colour = "black"),
+    legend.key=element_blank(),
+    axis.title = element_text(size=10),
+    axis.text = element_text(size=10),
+    legend.title = element_blank(),
+    legend.text = element_text(size=10))
+
+# color by site
+chulls.site <- ddply(gg, .(Site), function(gg) gg[chull(gg$NMDS1, gg$NMDS2), ])
+
+# NMDS plot, color by site
+p2 <- ggplot(data=gg, aes(x=NMDS1, y=NMDS2)) + 
+  geom_polygon(data=chulls.site, aes(x=NMDS1, y=NMDS2, fill=Site), alpha=0.5) +
+  geom_point(data=gg, aes(color=Site)) +
+  ggtitle("b)") +
+  theme_bw() +
+  theme(
+    plot.title = element_text(size=10),
+    axis.text.x = element_text(hjust=1),
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank(), 
+    axis.line = element_line(colour = "black"),
+    legend.key=element_blank(),
+    axis.title = element_text(size=10),
+    axis.text = element_text(size=10),
+    legend.title = element_blank(),
+    legend.text = element_text(size=10))
+
+# color by replicate
+chulls.replicate <- ddply(gg, .(Replicate), function(gg) gg[chull(gg$NMDS1, gg$NMDS2), ])
+
+# NMDS plot, color by replicate
+p3 <- ggplot(data=gg, aes(x=NMDS1, y=NMDS2)) + 
+  geom_polygon(data=chulls.replicate, aes(x=NMDS1, y=NMDS2, fill=Replicate), alpha=0.5) +
+  geom_point(data=gg, aes(color=Replicate)) +
+  ggtitle("c)") +
+  theme_bw() +
+  theme(
+    plot.title = element_text(size=10),
+    axis.text.x = element_text(hjust=1),
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank(), 
+    axis.line = element_line(colour = "black"),
+    legend.key=element_blank(),
+    axis.title = element_text(size=10),
+    axis.text = element_text(size=10),
+    legend.title = element_blank(),
+    legend.text = element_text(size=10))
+
+# color by status
+chulls.status <- ddply(gg, .(Status), function(gg) gg[chull(gg$NMDS1, gg$NMDS2), ])
+
+# NMDS plot, color by status
+p4 <- ggplot(data=gg, aes(x=NMDS1, y=NMDS2)) + 
+  geom_polygon(data=chulls.status, aes(x=NMDS1, y=NMDS2, fill=Status), alpha=0.5) +
+  geom_point(data=gg, aes(color=Status)) +
+  ggtitle("d)") +
+  theme_bw() +
+  theme(
+    plot.title = element_text(size=10),
+    axis.text.x = element_text(hjust=1),
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank(), 
+    axis.line = element_line(colour = "black"),
+    legend.key=element_blank(),
+    axis.title = element_text(size=10),
+    axis.text = element_text(size=10),
+    legend.title = element_blank(),
+    legend.text = element_text(size=10))
+
+g <- grid.arrange(p1, p2, p3, p4, nrow=2)
+g
+
+ggsave("NMDS.pdf", g)
+
+# Create metadata from rownames 'sample'
+env <- gg[,c(1,4:9)]
+
+# Assess dispersion (variance) using ANOVA
+# Create distance matrix based on P-A data using Bray Curtis (Sorensen) dissimilarity
+sor<-vegdist(rare.mat, "bray", binary=TRUE)
+
+# Calculate beta dispersion (homogeneity needed for adonis)
+# Break it down by study to ensure balanced design
+bd.site<-betadisper(sor, as.factor(env$Site))
+bd.method<-betadisper(sor, as.factor(env$Method))
+bd.replicate<-betadisper(sor, as.factor(env$Replicate))
+bd.status<-betadisper(sor, as.factor(env$Status))
+
+
+# check for heterogeneity of beta dispersions within groups BALANCED DESIGN
+set.seed(1234)
+anova(bd.site) # s (0.009304)
+anova(bd.method) # s (0.0001)
+anova(bd.replicate) # n/s (0.8387)
+anova(bd.status) # s (0.001)
+
+
+#need to pool microhabitat types to compare against kick-net for each site (need a balanced design)
+
+
+#END OF SCRIPT
+##################################3
