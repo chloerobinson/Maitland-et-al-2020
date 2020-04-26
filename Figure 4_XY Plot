@@ -1,0 +1,204 @@
+#Chloe Robinson Feb 20 2020 
+
+library(stringr) # str_split
+library(reshape2) # dcast
+library(vegan) # rrarefy
+library(ggplot2) # ggplot
+library(data.table) # setDT
+library(dplyr) # group_by
+library(ggrepel) #geom_text_repel
+library(gridExtra) #combine plots
+
+
+# Read in cat.csv
+A <- read.csv(file="rdp_pooled_2.csv", head=TRUE)
+
+# Create dataframes for vegan
+# Split up SampleName with pkg 'stringr'
+A.1<-data.frame(A, do.call(rbind, str_split(A$SampleName,"_")))
+names(A.1)[31:33]<- c("Site","Method","Status")
+
+# Remove unwanted phyla
+
+a.2<- A.1[A.1$Phylum!="Cryptophyta",]
+dim(a.2)
+a.3<- a.2[a.2$Phylum!="Rhodophyta",]
+dim(a.3)
+a.4<- a.3[a.3$Phylum!="undef_undef_Eukaryota",]
+dim(a.4)
+
+#filter by bootstrap proportion (95% correct, 300bp genus)
+#source https://github.com/terrimporter/rbcLdiatomClassifier
+
+a.5<- a.4[a.4$gBP>=0.60,]
+dim(a.5)
+head(a.5)
+
+# Create custom field for cast
+a.5$OrderGenusGlobalESV <- paste(a.5$Order, a.5$Genus, a.5$rbcL_GlobalESV, sep=";")
+
+# pivot to make esv matrix (pool across verions, keep only substrate + sites separate)
+a.5.esv <- reshape2::dcast(a.5, SampleName ~ OrderGenusGlobalESV, value.var = "ESVsize", fun.aggregate = sum)
+
+# move sample to rownames then delete
+rownames(a.5.esv) <- a.5.esv$SampleName
+a.5.esv$SampleName <- NULL
+
+# remove columns with only zeros
+esv.notnull<-a.5.esv[,colSums(a.5.esv) !=0]
+
+# remove rows with only zeros & edit rownames
+esv.notnull2 <- esv.notnull[rowSums(esv.notnull) !=0,]
+
+# calculate 15th percentile for rrarefy function
+esv.percentile<-quantile(rowSums(esv.notnull2), prob=0.15)
+esv.percentile
+# 15% 
+# 72770.55
+
+# set random seed
+set.seed(1234)
+
+# Rarefy the dataset down to the 15th percentile
+rare.mat <- rrarefy(esv.notnull2, sample=esv.percentile)
+
+# convert to presence absence
+rare.mat[rare.mat>0] <-1
+
+# convert to df
+df <- as.data.frame(rare.mat)
+
+# grab just K and T
+K <- df[grepl("K", rownames(df)),]
+T <- df[grepl("T", rownames(df)),]
+
+# Sum ESVs across samples
+K_sums <- colSums(K)
+T_sums <- colSums(T)
+
+# Convert to presence absence (i.e. pool accross samples above, then mark when detected with a 1)
+K_sums[K_sums>0] <-1
+T_sums[T_sums>0] <-1
+
+# combine into df
+K_T <- data.frame(cbind(K_sums, T_sums))
+
+# move rownames to first column
+setDT(K_T, keep.rownames = TRUE)[]
+names(K_T)[1] <- "Taxon_GlobalESV"
+
+# remove last to fields of Taxon
+t <- data.frame(K_T, do.call(rbind, str_split(K_T$Taxon_GlobalESV,";")))
+names(t)[4:6] <- c("Order","Genus","GlobalESV")
+
+# remove Taxon_GlobalESV
+t$Taxon_GlobalESV <- NULL
+
+# Create Taxon
+t$Taxon <- paste(t$Order, t$Genus, sep=";")
+
+# group by taxon, then sum
+t2 <- t %>%
+  group_by(Taxon) %>%
+  summarize(sumK=sum(K_sums),
+            sumT=sum(T_sums))
+
+# split order and genus into their own columns
+t3 <- data.frame(t2, do.call(rbind, str_split(t2$Taxon,";")))
+names(t3)[4:5] <- c("Order","Genus")
+
+# Compare richness by site
+M <- ggplot(t3, aes(x=sumK, y=sumT)) +
+  geom_point(aes(color=factor(Order)), position=position_jitter()) +
+  labs(x="Kick-net ESVs (log10)", y="Traditional ESVs (log10)", colour = "Order") +
+  geom_abline(intercept = 0, slope = 1, linetype = 3) +
+  scale_x_continuous(trans='log10', expand=expand_scale(mult=c(0.05,0.05))) +
+  scale_y_continuous(trans='log10', expand=expand_scale(mult=c(0.05,0.05))) +
+  geom_text_repel(aes(x = sumK, 
+                      y = sumT, 
+                      label = Genus),
+                  data=t3[t3$sumK>=2 & t3$sumT>=2,],
+                  size=2) +
+  theme_bw() + 
+  theme(panel.border = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        axis.line = element_line(colour = "black"),
+        axis.title=element_text(size=10),
+        legend.title=element_blank(),
+        legend.text=element_text(size=8),
+        legend.position="bottom")
+
+M
+########### STATUS ##############
+
+# grab just F and G
+F <- df[grepl("F", rownames(df)),]
+G <- df[grepl("G", rownames(df)),]
+
+# Sum ESVs across samples
+F_sums <- colSums(F)
+G_sums <- colSums(G)
+
+# Convert to presence absence (i.e. pool accross samples above, then mark when detected with a 1)
+F_sums[F_sums>0] <-1
+G_sums[G_sums>0] <-1
+
+# combine into df
+F_G <- data.frame(cbind(F_sums, G_sums))
+
+# move rownames to first column
+setDT(F_G, keep.rownames = TRUE)[]
+names(F_G)[1] <- "Taxon_GlobalESV"
+
+# remove last to fields of Taxon
+t <- data.frame(F_G, do.call(rbind, str_split(F_G$Taxon_GlobalESV,";")))
+names(t)[4:6] <- c("Order","Genus","GlobalESV")
+
+# remove Taxon_GlobalESV
+t$Taxon_GlobalESV <- NULL
+
+# Create Taxon
+t$Taxon <- paste(t$Order, t$Genus, sep=";")
+
+# group by taxon, then sum
+t2 <- t %>%
+  group_by(Taxon) %>%
+  summarize(sumF=sum(F_sums),
+            sumG=sum(G_sums))
+
+# split order and genus into their own columns
+t3 <- data.frame(t2, do.call(rbind, str_split(t2$Taxon,";")))
+names(t3)[4:5] <- c("Order","Genus")
+
+# Compare richness by site
+S <- ggplot(t3, aes(x=sumF, y=sumG)) +
+  geom_point(aes(color=factor(Order)), position=position_jitter()) +
+  labs(x="Fair Status ESVs (log10)", y="Good Status ESVs (log10)", colour = "Order") +
+  geom_abline(intercept = 0, slope = 1, linetype = 3) +
+  scale_x_continuous(trans='log10', expand=expand_scale(mult=c(0.05,0.05))) +
+  scale_y_continuous(trans='log10', expand=expand_scale(mult=c(0.05,0.05))) +
+  geom_text_repel(aes(x = sumF, 
+                      y = sumG, 
+                      label = Genus),
+                  data=t3[t3$sumF>=2 & t3$sumG>=2,],
+                  size=2) +
+  theme_bw() + 
+  theme(panel.border = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        axis.line = element_line(colour = "black"),
+        axis.title=element_text(size=10),
+        legend.title=element_blank(),
+        legend.text=element_text(size=8),
+        legend.position="bottom")
+
+S
+
+plotXY <- grid.arrange(M, S, nrow=2)
+plotXY
+
+ggsave("Plot_xy.pdf", p, width = 8)
+# based on normalized/rarefied data
+# Filtered diatom data
+# Confidently identified genera only
