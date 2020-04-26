@@ -1,0 +1,325 @@
+#Chloe Robinson, Apr 24 2020 
+
+library(stringr) # str_split
+library(reshape2) # dcast
+library(vegan) # rrarefy
+library(ggplot2) # ggplot
+library(data.table) # setDT
+library(goeveg) # scree
+library(plyr) # ddply
+library(gridExtra)
+
+#Read in table
+a <- read.table("rdp_pooled_2.csv", header = TRUE, sep = ",",stringsAsFactors = FALSE)
+head(a)
+
+# Create dataframes for vegan
+# Split up SampleName with pkg 'stringr'
+a.1<-data.frame(a, do.call(rbind, str_split(a$SampleName,"_")), stringsAsFactors = FALSE)
+head(a.1)
+names(a.1)[31:33]<- c("Site","Method","Status")
+head(a.1)
+
+# Remove unwanted phyla
+
+a.2<- a.1[a.1$Phylum!="Cryptophyta",]
+dim(a.2)
+a.3<- a.2[a.2$Phylum!="Rhodophyta",]
+dim(a.3)
+a.4<- a.3[a.3$Phylum!="undef_undef_Eukaryota",]
+dim(a.4)
+
+
+# pivot to make esv matrix (pool across verions, keep only substrate + sites separate)
+a.2.esv<-reshape2::dcast(a.4, SampleName ~ rbcL_GlobalESV, value.var = "ESVsize", fun.aggregate = sum)
+
+# move sample to rownames then delete
+rownames(a.2.esv) <- a.2.esv$SampleName
+a.2.esv$SampleName <- NULL
+
+#remove columns with only zeros
+esv.notnull<-a.2.esv[,colSums(a.2.esv) !=0]
+
+#remove rows with only zeros & edit rownames
+esv.notnull2<-esv.notnull[rowSums(esv.notnull) !=0,]
+
+# Exclude negative controls before doing rarefaction (if present)
+#esv.notnull2.2 <- esv.notnull2[-c(3,6,9),]
+
+#calculate 15th percentile for rrarefy function
+esv.percentile<-quantile(rowSums(esv.notnull2), prob=0.15)
+esv.percentile
+# 15% 
+# 134596
+
+# set random seed
+set.seed(1234)
+
+# Rarefy the dataset down to the 15th percentile
+rare.mat <- rrarefy(esv.notnull2, sample=esv.percentile)
+
+# Convert to presence-absence matrix
+rare.mat[rare.mat>0] <-1
+
+# Scree plots to determine number of dimensions to use for NMDS, use k=3
+pdf("Scree.pdf")
+# check dims
+dimcheckMDS(rare.mat)
+dev.off()
+
+# Do 2 dimensional NMDS
+nmds2<-metaMDS(rare.mat, k=2, trymax=100)
+# stress = 0.01217832
+
+# Stressplot Shephards curve to assess goodness of fit between observed and ordination distances
+pdf("stressplot_K_T.pdf")
+stressplot(nmds2)
+gof <-goodness(nmds2)
+gof
+plot(nmds2, display = "sites", type="n", main="SSU")
+points(nmds2, display="sites",cex=2*gof/mean(gof))
+dev.off()
+# linear R2 = 1
+
+# Create grouping matrix for samples by grabbing row names from above matrix
+names<-data.frame(row.names(rare.mat), stringsAsFactors = FALSE)
+
+# Rename the column
+names(names)<-"sample"
+
+# Copy column to row names
+row.names(names)<-names$sample
+
+# Split first column into their own fields
+names.1<-data.frame(names, do.call(rbind, strsplit(names$sample,'_')), stringsAsFactors = FALSE)
+names(names.1)[2:4]<-c("Site","Method","Status")
+
+
+# Exclude negative controls before doing NMDS
+#names.2 <- names.1[-c(3,7,11),]
+
+# Remove first column
+names.1 <- names.1[,-1]
+
+# Grab sites/species scores from NMDS output
+df <- data.frame(scores(nmds2, display = "sites"))
+
+# Put it all in one df for ggplot
+gg <- merge(df, names.1, by="row.names")
+
+gg$Site <- factor(gg$Site, 
+                       levels = c("B18", "C12", "C15","L07"),
+                       labels = c("Beaver18", "Clair12", "Clair15","Laurel7"))
+gg$Method <- factor(gg$Method, 
+                         levels = c("K", "T"),
+                         labels = c("Kick-net", "Traditional"))
+gg$Status <- factor(gg$Status, 
+                         levels = c("F", "G"),
+                         labels = c("Fair", "Good"))
+
+# color by method
+chulls.method <- ddply(gg, .(Method), function(gg) gg[chull(gg$NMDS1, gg$NMDS2), ])
+
+# NMDS plot, color by method
+p1 <- ggplot(data=gg, aes(x=NMDS1, y=NMDS2)) + 
+  geom_polygon(data=chulls.method, aes(x=NMDS1, y=NMDS2, fill=Method), alpha=0.5) +
+  geom_point(data=gg, aes(color=Method)) +
+  ggtitle("a)") +
+  theme_bw() +
+  theme(
+    plot.title = element_text(size=10),
+    axis.text.x = element_text(hjust=1),
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank(), 
+    axis.line = element_line(colour = "black"),
+    legend.key=element_blank(),
+    axis.title = element_text(size=10),
+    axis.text = element_text(size=10),
+    legend.title = element_blank(),
+    legend.text = element_text(size=10))
+
+p1
+
+# color by site
+chulls.site <- ddply(gg, .(Site), function(gg) gg[chull(gg$NMDS1, gg$NMDS2), ])
+
+# NMDS plot, color by site
+p2 <- ggplot(data=gg, aes(x=NMDS1, y=NMDS2)) + 
+  geom_polygon(data=chulls.site, aes(x=NMDS1, y=NMDS2, fill=Site), alpha=0.5) +
+  geom_point(data=gg, aes(color=Site)) +
+  ggtitle("b)") +
+  theme_bw() +
+  theme(
+    plot.title = element_text(size=10),
+    axis.text.x = element_text(hjust=1),
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank(), 
+    axis.line = element_line(colour = "black"),
+    legend.key=element_blank(),
+    axis.title = element_text(size=10),
+    axis.text = element_text(size=10),
+    legend.title = element_blank(),
+    legend.text = element_text(size=10))
+
+p2
+
+# color by status
+chulls.status <- ddply(gg, .(Status), function(gg) gg[chull(gg$NMDS1, gg$NMDS2), ])
+
+# NMDS plot, color by status
+p3 <- ggplot(data=gg, aes(x=NMDS1, y=NMDS2)) + 
+  geom_polygon(data=chulls.status, aes(x=NMDS1, y=NMDS2, fill=Status), alpha=0.5) +
+  geom_point(data=gg, aes(color=Status)) +
+  ggtitle("c)") +
+  theme_bw() +
+  theme(
+    plot.title = element_text(size=10),
+    axis.text.x = element_text(hjust=1),
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank(), 
+    axis.line = element_line(colour = "black"),
+    legend.key=element_blank(),
+    axis.title = element_text(size=10),
+    axis.text = element_text(size=10),
+    legend.title = element_blank(),
+    legend.text = element_text(size=10))
+
+g <- grid.arrange(p1, p2, p3, nrow=2)
+g
+
+ggsave("NMDS_K_T.pdf", g)
+
+# Create metadata from rownames 'sample'
+env <- gg[,c(1,4:6)]
+
+# Assess dispersion (variance) using ANOVA
+# Create distance matrix based on P-A data using Bray Curtis (Sorensen) dissimilarity
+sor<-vegdist(rare.mat, "bray", binary=TRUE)
+
+# Calculate beta dispersion (homogeneity needed for adonis)
+# Break it down by study to ensure balanced design
+bd.site<-betadisper(sor, as.factor(env$Site))
+bd.method<-betadisper(sor, as.factor(env$Method))
+bd.status<-betadisper(sor, as.factor(env$Status))
+
+
+# check for heterogeneity of beta dispersions within groups BALANCED DESIGN
+set.seed(1234)
+anova(bd.site) # n/s (0.1112)
+anova(bd.method) # n/s (0.3584)
+anova(bd.status) # n/s (0.05709)
+
+
+pdf("BetaDispersion_K_T.pdf")
+par(mfrow=c(2,2))
+boxplot(bd.site, main="Site")
+boxplot(bd.method, main="Method")
+boxplot(bd.status, main="Status")
+dev.off()
+
+# remove all non-replicated method type samples for balanced design to compare experiment and treatment
+#env <- gg[,c(1,4:9)]
+#env <- env[!grepl("Macrophyte",env$Row.names),]
+
+# Use ADONIS to test significance of groupings 
+adonis(sor~Method, data=env, permutations=999)
+          #Df SumsOfSqs MeanSqs F.Model     R2 Pr(>F)
+#Method     1   0.26449 0.26449 0.89973 0.1304  0.776
+#Residuals  6   1.76378 0.29396         0.8696       
+#Total      7   2.02827                 1.0000 
+
+# Use ADONIS to test significance of groupings 
+adonis(sor~Method, data=env, permutations=999, strata=env$Site)
+          #Df SumsOfSqs MeanSqs F.Model      R2 Pr(>F)
+#Method     1   0.26449 0.26449 0.89973 0.1304  0.125
+#Residuals  6   1.76378 0.29396         0.8696       
+#Total      7   2.02827                 1.0000  
+
+# Use ADONIS to test significance of groupings 
+adonis(sor~Site, data=env, permutations=999)
+          #Df SumsOfSqs MeanSqs F.Model      R2 Pr(>F)   
+#Site       3   1.17366 0.39122  1.8311 0.57865  0.013 *
+#Residuals  4   0.85461 0.21365         0.42135         
+#Total      7   2.02827                 1.00000 
+
+# Use ADONIS to test significance of groupings 
+adonis(sor~Site, data=env, permutations=999, strata=env$Method)
+          #Df SumsOfSqs MeanSqs F.Model      R2 Pr(>F)  
+#Site       3   1.17366 0.39122  1.8311 0.57865 0.04167 *
+#Residuals  4   0.85461 0.21365         0.42135          
+#Total      7   2.02827                 1.00000   
+
+# Use ADONIS to test significance of groupings 
+adonis(sor~Status, data=env, permutations=999)
+          #Df SumsOfSqs MeanSqs F.Model      R2 Pr(>F)
+#Status     1   0.30718 0.30718  1.0709 0.15145  0.317
+#Residuals  6   1.72109 0.28685         0.84855       
+#Total      7   2.02827                 1.00000 
+
+# Use ADONIS to test significance of groupings 
+adonis(sor~Status, data=env, permutations=999, strata=env$Method)
+          #Df SumsOfSqs MeanSqs F.Model      R2 Pr(>F)  
+#Status     1   0.44327 0.44327   1.678 0.21855 0.05556 .
+#Residuals  6   1.58500 0.26417         0.78145          
+#Total      7   2.02827                 1.00000  
+
+
+# Use ADONIS to test significance of groupings 
+adonis(sor~Status*Method, data=env, permutations=999, strata=env$Site)
+              #Df SumsOfSqs MeanSqs F.Model      R2 Pr(>F)
+#Status         1   0.44327 0.44327 1.58384 0.21855  0.250
+#Method         1   0.26449 0.26449 0.94503 0.13040  0.125
+#Status:Method  1   0.20101 0.20101 0.71823 0.09911  0.500
+#Residuals      4   1.11950 0.27987         0.55195       
+#Total          7   2.02827                 1.00000       
+#Total          7   2.02827                 1.00000  
+
+# Use ADONIS to test significance of groupings 
+adonis(sor~Site*Method, data=env, permutations=999, strata=env$Status)
+            #Df SumsOfSqs MeanSqs F.Model      R2 Pr(>F)
+#Site         3   1.17366       0       0 0.57865      1
+#Method       1   0.26449       0       0 0.13040      1
+#Site:Method  3   0.59012       0       0 0.29095      1
+#Residuals    0   0.00000     Inf         0.00000       
+#Total        7   2.02827                 1.00000       
+#Total        7   2.07693                 1.00000  
+
+
+######
+#Calculate turnover and nestedness using betapart
+
+install.packages("betapart")
+library(betapart)
+
+#Calculate Jaccard index and its partitions of turnover and nestedness for pairs of sites
+dist<-beta.pair(rare.mat, index.family="jaccard")
+dist[[1]]
+dist[[2]]
+dist[[3]]
+
+#Calculate Jaccard index and its partitions of turnover and nestedness for multi sites
+dist2<-beta.multi(rare.mat, index.family="jaccard")
+dist2[[1]]
+dist2[[2]]
+dist2[[3]]
+
+#Compare the beta diversities of communities aggregated by the method type
+bd<-betadisper(dist[[3]],gg$Method)
+bd
+plot(bd)
+boxplot(bd)
+anova(bd)
+
+#Compare the beta diversities of communities aggregated by the site status
+bd2<-betadisper(dist[[1]],gg$Status)
+plot(bd2)
+boxplot(bd2)
+anova(bd2)
+
+
+
+#END OF SCRIPT
+##################################
