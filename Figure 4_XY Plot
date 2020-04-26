@@ -27,7 +27,7 @@ dim(a.3)
 a.4<- a.3[a.3$Phylum!="undef_undef_Eukaryota",]
 dim(a.4)
 
-#filter by bootstrap proportion (95% correct, 300bp genus)
+#filter by bootstrap proportion (99% correct, 300bp genus)
 #source https://github.com/terrimporter/rbcLdiatomClassifier
 
 a.5<- a.4[a.4$gBP>=0.60,]
