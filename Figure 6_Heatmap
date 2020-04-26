@@ -1,0 +1,246 @@
+#Chloe Robinson, Feb 28 2020
+
+library(stringr) # str_split
+library(reshape2) # dcast
+library(vegan) # rrarefy
+library(ggplot2) # ggplot
+library(data.table) # setDT
+library(gridExtra) # grid.arrange
+library(cowplot) # get_legend
+
+#Read in table
+
+a <- read.table("rdp_pooled.csv", header = TRUE, sep = ",",stringsAsFactors = FALSE)
+head(a)
+
+# Remove unwanted phyla
+
+a.1<- a[a$Phylum!="Cryptophyta",]
+dim(a.1)
+a.2<- a.1[a.1$Phylum!="Rhodophyta",]
+dim(a.2)
+a.3<- a.2[a.2$Phylum!="undef_undef_Eukaryota",]
+dim(a.3)
+
+#filter by bootstrap proportion (99% correct, 300bp genus)
+#source https://github.com/terrimporter/rbcLdiatomClassifier
+
+a.4<- a.3[a.3$fBP>=0.60,]
+dim(a.4)
+head(a.4)
+
+# Create dataframes for vegan
+# Split up SampleName with pkg 'stringr'
+a.5<-data.frame(a.4, do.call(rbind, str_split(a.4$SampleName,"_")), stringsAsFactors = FALSE)
+head(a.5)
+names(a.5)[31:33]<- c("Site","Method","Status")
+head(a.5)
+
+# Separate sites by status
+good <- a.5[a.5$Status=="G",]
+
+fair <- a.5[a.5$Status=="F",]
+
+# pivot to make esv matrix (pool across verions, keep only substrate + sites separate)
+good.family<-reshape2::dcast(good, SampleName ~ Family, value.var = "ESVsize", fun.aggregate = sum)
+fair.family<-reshape2::dcast(fair, SampleName ~ Family, value.var = "ESVsize", fun.aggregate = sum)
+
+# move sample to rownames then delete
+rownames(good.family) <- good.family$SampleName
+good.family$SampleName <- NULL
+
+rownames(fair.family) <- fair.family$SampleName
+fair.family$SampleName <- NULL
+
+# remove columns with only zeros
+good.notnull<-good.family[,colSums(good.family) !=0]
+
+fair.notnull<-fair.family[,colSums(fair.family) !=0]
+
+# remove rows with only zeros & edit rownames
+good.notnull2<-good.notnull[rowSums(good.notnull) !=0,]
+
+fair.notnull2<-fair.notnull[rowSums(fair.notnull) !=0,]
+
+# calculate 15th percentile for rrarefy function
+good.percentile<-quantile(rowSums(good.notnull2), prob=0.15)
+good.percentile
+# 15% 
+# 113807.8
+
+fair.percentile<-quantile(rowSums(fair.notnull2), prob=0.15)
+fair.percentile
+# 15% 
+# 94407.55
+
+# set random seed
+set.seed(1234)
+
+# Rarefy the dataset down to the 15th percentile
+good.mat <- rrarefy(good.notnull2, sample=good.percentile)
+
+fair.mat <- rrarefy(fair.notnull2, sample=fair.percentile)
+
+# Convert to df
+good.df<-data.frame(good.mat)
+
+fair.df<-data.frame(fair.mat)
+
+# Get total ESVs per sample
+good.df$sums<-rowSums(good.df)
+
+fair.df$sums<-rowSums(fair.df)
+
+# Move rownames to first column
+good.df2<-data.frame(good.df)
+setDT(good.df2, keep.rownames = TRUE)[]
+
+fair.df2<-data.frame(fair.df)
+setDT(fair.df2, keep.rownames = TRUE)[]
+
+# Get separate substrate and siterep cols
+setDT(good.df2)[, paste0("S", 1:3) := tstrsplit(rn, "_")]
+colnames(good.df2)[colnames(good.df2)=="S1"] <- "Site"
+colnames(good.df2)[colnames(good.df2)=="S2"] <- "Method"
+colnames(good.df2)[colnames(good.df2)=="S3"] <- "Status"
+
+setDT(fair.df2)[, paste0("S", 1:3) := tstrsplit(rn, "_")]
+colnames(fair.df2)[colnames(fair.df2)=="S1"] <- "Site"
+colnames(fair.df2)[colnames(fair.df2)=="S2"] <- "Method"
+colnames(fair.df2)[colnames(fair.df2)=="S3"] <- "Status"
+
+#set factors
+
+
+good.df2$Site <- factor(good.df2$Site, 
+                  levels = c("B18", "C15"),
+                  labels = c("Beaver18", "Clair15"))
+good.df2$Method <- factor(good.df2$Method, 
+                    levels = c("K", "R","L","M","S"),
+                    labels = c("K", "R","L","M","S"))
+good.df2$Status <- factor(good.df2$Status, 
+                          levels = c("G"),
+                          labels = c("Good"))
+
+fair.df2$Site <- factor(fair.df2$Site, 
+                        levels = c("C12","L07"),
+                        labels = c("Clair12","Laurel7"))
+fair.df2$Method <- factor(fair.df2$Method, 
+                          levels = c("K", "R","L","M","S"),
+                          labels = c("K", "R","L","M","S"))
+fair.df2$Status <- factor(fair.df2$Status, 
+                          levels = c("F"),
+                          labels = c("Fair"))
+
+# remove unneeded columns
+good.df3 <- good.df2[,-c(1,29)]
+
+fair.df3 <- fair.df2[,-c(1,33)]
+
+# melt for ggplot
+good.df4 <- melt(good.df3, id=c("Site","Method","Status"))
+
+fair.df4 <- melt(fair.df3, id=c("Site","Method","Status"))
+
+# create factor
+good.df4$variable <- factor(good.df4$variable,
+                              levels=rev(unique(good.df4$variable)))
+
+fair.df4$variable <- factor(fair.df4$variable,
+                            levels=rev(unique(fair.df4$variable)))
+
+# Compare richness by site
+p.tmp <- ggplot(good.df4) +
+  geom_tile(aes(x=Method, y=variable, fill=value)) +
+  ggtitle("a)") +
+  labs(x="Sites", y="Diatom Family") +
+  theme(legend.title=element_blank()) +
+  scale_fill_gradient(trans="log10", na.value="white", low="white", high="black") +
+  theme_bw() + 
+  facet_grid(cols=vars(Site)) +
+  guides(fill=guide_legend(title="Reads")) +
+  theme(panel.border = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        axis.line = element_line(colour = "black"),
+        axis.text.x = element_text(angle = 90, hjust = 1.0,vjust = 0, size=7),
+        axis.text.y = element_text(size=7),
+        axis.title.x = element_blank(),
+        legend.position = "bottom",
+        legend.title = element_text(size=8),
+        legend.text = element_text(size=8))
+
+l<- get_legend(p.tmp)
+
+p <- ggplot(good.df4) +
+  geom_tile(aes(x=Method, y=variable, fill=value)) +
+  ggtitle("a)") +
+  labs(x="Sites", y="Diatom Family") +
+  theme(legend.title=element_blank()) +
+  scale_fill_gradient(trans="log10", na.value="white", low="white", high="black") +
+  theme_bw() + 
+  facet_grid(cols=vars(Site)) +
+  guides(fill=guide_legend(title="Reads")) +
+  theme(panel.border = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        axis.line = element_line(colour = "black"),
+        axis.text.x = element_text(),
+        axis.text.y = element_text(size=7),
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size=9),
+        legend.position = "none",
+        strip.text.x = element_text(size = 7),
+        strip.text.y = element_text(size = 7))
+
+s.tmp <- ggplot(fair.df4) +
+  geom_tile(aes(x=Method, y=variable, fill=value)) +
+  ggtitle("b)") +
+  labs(x="Sites", y="Diatom Family") +
+  theme(legend.title=element_blank()) +
+  scale_fill_gradient(trans="log10", na.value="white", low="white", high="black") +
+  theme_bw() + 
+  facet_grid(cols=vars(Site)) +
+  guides(fill=guide_legend(title="Reads")) +
+  theme(panel.border = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        axis.line = element_line(colour = "black"),
+        axis.text.x = element_text(angle = 90, hjust = 1.0,vjust = 0, size=7),
+        axis.text.y = element_text(size=7),
+        axis.title.x = element_blank(),
+        legend.position = "bottom",
+        legend.title = element_text(size=8),
+        legend.text = element_text(size=8))
+
+
+l2 <- get_legend(s.tmp)
+
+s <- ggplot(fair.df4) +
+  geom_tile(aes(x=Method, y=variable, fill=value)) +
+  ggtitle("b)") +
+  labs(x="Sites", y="Diatom Family") +
+  theme(legend.title=element_blank()) +
+  scale_fill_gradient(trans="log10", na.value="white", low="white", high="black") +
+  theme_bw() + 
+  facet_grid(cols=vars(Site)) +
+  guides(fill=guide_legend(title="Reads")) +
+  theme(panel.border = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        axis.line = element_line(colour = "black"),
+        axis.text.x = element_text(),
+        axis.text.y = element_text(size=7),
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size=9),
+        legend.position = "none",
+        strip.text.x = element_text(size = 7),
+        strip.text.y = element_text(size = 7))
+
+g <- plot_grid(p,s,l2, nrow = 4, rel_heights = c(1.5, 1.5, 0.2,0.2))
+g
+
+ggsave("Family_heatmap.pdf", g, width = 8, height = 11)
+# based on normalized/rarefied data
+# Diatom family only, split by site status 
+# controls excluded
