@@ -1,0 +1,40 @@
+#Author: Chloe Robinson Apr 24 2020
+
+library(ggmap) # map
+library("ggsn") # map scale bar
+library(scales) # comma
+library(ggplot2)
+library(ggrepel)
+
+#Read in table
+
+a <- read.table("sites.csv", header = TRUE, sep = ",",stringsAsFactors = FALSE)
+head(a)
+
+attach(a)
+
+# get map, the higher the zoom, the more detail on the map
+map <- get_stamenmap(bbox = c(left = -80.90, bottom = 43.2, 
+                              right = -80.20, top = 43.7), 
+                     zoom = 13)
+
+
+p <- ggmap(map) +
+  geom_point(data=a, aes(x=Long, y=Lat, colour = Status), size=3) + 
+  geom_label_repel(data=a, aes(x=Long, y=Lat, label = a$Region), box.padding = unit (2,"lines"))+
+  theme_bw() +
+  theme(
+    axis.title = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    legend.title = element_text(size = 14, face = "bold"),
+    legend.text = element_text(size = 14),
+    legend.position = "bottom")+
+  scalebar(x.min = -80.90, x.max = -80.20, y.min = 43.2, y.max = 43.7, location = "bottomright", 
+           dist = 10, dist_unit = "km", transform = TRUE, model="WGS84",
+           st.bottom = FALSE, st.color = "black", st.size = 3, st.dist = 0.025)
+
+p
+
+END OF SCRIPT
+###############################################################################
